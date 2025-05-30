@@ -152,9 +152,9 @@ class AnimeNameGame(commands.Cog):
         else:  # 1 day and over
             return 20
 
-    @commands.group(name='animegame', aliases=['ag'], invoke_without_command=True)
-    async def anime_game(self, ctx):
-        """Anime Name Game commands"""
+    @discord.app_commands.command(name='animegame', description='Show anime name game info and commands')
+    async def anime_game_info(self, interaction: discord.Interaction):
+        """Show anime name game information"""
         embed = discord.Embed(
             title="🎌 Anime Name Game",
             description="Play the anime character name game!",
@@ -169,23 +169,34 @@ class AnimeNameGame(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="Commands",
-            value="`/animegame setchannel` - Set game channel\n"
-                  "`/animegame leaderboard` - View XP leaderboard\n"
-                  "`/animegame reset` - Reset game (Admin only)\n"
-                  "`/animegame stats` - View your stats",
+            name="XP System",
+            value="• Under 20s: 2000 XP\n"
+                  "• Under 30s: 1500 XP\n"
+                  "• Under 1min: 800 XP\n"
+                  "• Under 6hrs: 200 XP\n"
+                  "• Under 12hrs: 100 XP\n"
+                  "• Over 1 day: 20 XP",
             inline=False
         )
-        await ctx.send(embed=embed)
+        embed.add_field(
+            name="Slash Commands",
+            value="`/setchannel` - Set game channel\n"
+                  "`/leaderboard` - View XP leaderboard\n"
+                  "`/stats` - View your stats\n"
+                  "`/resetgame` - Reset game (Admin only)",
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed)
 
-    @anime_game.command(name='setchannel')
-    @commands.has_permissions(manage_channels=True)
-    async def set_channel(self, ctx, channel: discord.TextChannel = None):
+    @discord.app_commands.command(name='setchannel', description='Set the anime name game channel')
+    @discord.app_commands.describe(channel='The channel to set as game channel (current channel if not specified)')
+    @discord.app_commands.default_permissions(manage_channels=True)
+    async def set_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
         """Set the anime name game channel"""
         if channel is None:
-            channel = ctx.channel
+            channel = interaction.channel
         
-        guild_id = ctx.guild.id
+        guild_id = interaction.guild.id
         
         # Initialize guild data if not exists
         if guild_id not in self.game_channels:
@@ -210,15 +221,16 @@ class AnimeNameGame(commands.Cog):
                   "• Verified through AniList database",
             inline=False
         )
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @anime_game.command(name='leaderboard', aliases=['lb', 'top'])
-    async def leaderboard(self, ctx, page: int = 1):
+    @discord.app_commands.command(name='leaderboard', description='Show anime game XP leaderboard')
+    @discord.app_commands.describe(page='Page number to view')
+    async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
         """Show XP leaderboard"""
-        guild_id = ctx.guild.id
+        guild_id = interaction.guild.id
         
         if guild_id not in self.user_scores or not self.user_scores[guild_id]:
-            await ctx.send("📊 No scores recorded yet! Start playing to see the leaderboard.")
+            await interaction.response.send_message("📊 No scores recorded yet! Start playing to see the leaderboard.")
             return
         
         # Sort users by XP
@@ -261,19 +273,20 @@ class AnimeNameGame(commands.Cog):
         embed.description = leaderboard_text
         embed.set_footer(text=f"Page {page}/{total_pages} • Total Players: {len(sorted_users)}")
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @anime_game.command(name='stats')
-    async def stats(self, ctx, user: discord.Member = None):
+    @discord.app_commands.command(name='stats', description='Show anime game stats for a user')
+    @discord.app_commands.describe(user='User to check stats for (yourself if not specified)')
+    async def stats(self, interaction: discord.Interaction, user: discord.Member = None):
         """Show user stats"""
         if user is None:
-            user = ctx.author
+            user = interaction.user
         
-        guild_id = ctx.guild.id
+        guild_id = interaction.guild.id
         user_id = user.id
         
         if guild_id not in self.user_scores or user_id not in self.user_scores[guild_id]:
-            await ctx.send(f"📊 {user.display_name} hasn't played the anime name game yet!")
+            await interaction.response.send_message(f"📊 {user.display_name} hasn't played the anime name game yet!")
             return
         
         xp = self.user_scores[guild_id][user_id]
@@ -296,13 +309,13 @@ class AnimeNameGame(commands.Cog):
         embed.add_field(name="Total Players", value=f"{len(sorted_users)}", inline=True)
         
         embed.set_thumbnail(url=user.display_avatar.url)
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @anime_game.command(name='reset')
-    @commands.has_permissions(administrator=True)
-    async def reset_game(self, ctx):
+    @discord.app_commands.command(name='resetgame', description='Reset the anime name game (Admin only)')
+    @discord.app_commands.default_permissions(administrator=True)
+    async def reset_game(self, interaction: discord.Interaction):
         """Reset the anime name game (Admin only)"""
-        guild_id = ctx.guild.id
+        guild_id = interaction.guild.id
         
         # Confirmation
         embed = discord.Embed(
@@ -316,7 +329,8 @@ class AnimeNameGame(commands.Cog):
         )
         
         view = ConfirmView()
-        message = await ctx.send(embed=embed, view=view)
+        await interaction.response.send_message(embed=embed, view=view)
+        message = await interaction.original_response()
         
         await view.wait()
         
@@ -495,11 +509,13 @@ class ConfirmView(discord.ui.View):
     @discord.ui.button(label='Confirm Reset', style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.confirmed = True
+        await interaction.response.defer()
         self.stop()
 
     @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.confirmed = False
+        await interaction.response.defer()
         self.stop()
 
 async def setup(bot):
