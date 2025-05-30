@@ -40,7 +40,8 @@ class OptimizedBot(commands.Bot):
             'cogs.moderation', 
             'cogs.word_blocker',
             'cogs.custom_roles',
-            'cogs.ngareply'
+            'cogs.ngareply',
+            'cogs.anime_game'
         ]
         self._shutdown_event = asyncio.Event()
 
@@ -86,7 +87,7 @@ class OptimizedBot(commands.Bot):
         self.logger.info(f'📊 Bot is in {len(self.guilds)} guilds')
         
         # Set bot status
-        activity = discord.Game(name="with custom roles and nga replies!")
+        activity = discord.Game(name="with custom roles, nga replies & anime games!")
         await self.change_presence(status=discord.Status.online, activity=activity)
 
     async def on_message(self, message):
