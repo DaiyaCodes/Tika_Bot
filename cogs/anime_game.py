@@ -4,7 +4,8 @@ import aiohttp
 import asyncio
 import json
 import time
-from pathlib import Path
+import os
+import random
 from typing import Dict, List, Optional, Tuple
 import re
 import unicodedata
@@ -12,14 +13,19 @@ import unicodedata
 class AnimeNameGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.data_file = Path('data/anime_game.json')
         self.game_channels: Dict[int, dict] = {}  # guild_id -> game_data
         self.used_names: Dict[int, set] = {}  # guild_id -> set of used names
         self.user_scores: Dict[int, Dict[int, int]] = {}  # guild_id -> {user_id: xp}
-        self.last_messages: Dict[int, dict] = {}  # guild_id -> {user_id, name, timestamp, last_letter}
+        self.current_letters: Dict[int, dict] = {}  # guild_id -> {letter, timestamp, message_id}
         
-        # Ensure data directory exists
-        Path('data').mkdir(exist_ok=True)
+        # Letter frequency weights (higher = more likely to appear)
+        self.letter_weights = {
+            'a': 25, 'b': 15, 'c': 18, 'd': 12, 'e': 20, 'f': 10, 'g': 12, 'h': 15,
+            'i': 22, 'j': 8, 'k': 18, 'l': 12, 'm': 20, 'n': 15, 'o': 18, 'p': 10,
+            'q': 5, 'r': 16, 's': 25, 't': 20, 'u': 15, 'v': 8, 'w': 10, 'x': 3,
+            'y': 8, 'z': 6
+        }
+        
         self.load_data()
         
     def cog_unload(self):
@@ -27,26 +33,34 @@ class AnimeNameGame(commands.Cog):
         self.save_data()
 
     def load_data(self):
-        """Load game data from file"""
-        if self.data_file.exists():
-            try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Convert string keys back to integers for guild/user IDs
-                self.game_channels = {int(k): v for k, v in data.get('game_channels', {}).items()}
-                self.used_names = {int(k): set(v) for k, v in data.get('used_names', {}).items()}
-                self.user_scores = {
-                    int(guild_id): {int(user_id): score for user_id, score in users.items()}
-                    for guild_id, users in data.get('user_scores', {}).items()
-                }
-                self.last_messages = {int(k): v for k, v in data.get('last_messages', {}).items()}
-                
-            except Exception as e:
-                self.bot.logger.error(f"Error loading anime game data: {e}")
+        """Load game data from environment variables or file"""
+        try:
+            # Try to load from environment variable first (for Railway/Heroku)
+            data_str = os.getenv('ANIME_GAME_DATA')
+            if data_str:
+                data = json.loads(data_str)
+            else:
+                # Fallback to file for local development
+                try:
+                    with open('anime_game_data.json', 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except FileNotFoundError:
+                    data = {}
+            
+            # Convert string keys back to integers for guild/user IDs
+            self.game_channels = {int(k): v for k, v in data.get('game_channels', {}).items()}
+            self.used_names = {int(k): set(v) for k, v in data.get('used_names', {}).items()}
+            self.user_scores = {
+                int(guild_id): {int(user_id): score for user_id, score in users.items()}
+                for guild_id, users in data.get('user_scores', {}).items()
+            }
+            self.current_letters = {int(k): v for k, v in data.get('current_letters', {}).items()}
+            
+        except Exception as e:
+            self.bot.logger.error(f"Error loading anime game data: {e}")
 
     def save_data(self):
-        """Save game data to file"""
+        """Save game data to environment variable or file"""
         try:
             data = {
                 'game_channels': {str(k): v for k, v in self.game_channels.items()},
@@ -55,11 +69,20 @@ class AnimeNameGame(commands.Cog):
                     str(guild_id): {str(user_id): score for user_id, score in users.items()}
                     for guild_id, users in self.user_scores.items()
                 },
-                'last_messages': {str(k): v for k, v in self.last_messages.items()}
+                'current_letters': {str(k): v for k, v in self.current_letters.items()}
             }
             
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            data_str = json.dumps(data, ensure_ascii=False)
+            
+            # Save to environment variable for Railway/Heroku
+            os.environ['ANIME_GAME_DATA'] = data_str
+            
+            # Also save to file for local development
+            try:
+                with open('anime_game_data.json', 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except:
+                pass  # Don't fail if file can't be written (read-only filesystem)
                 
         except Exception as e:
             self.bot.logger.error(f"Error saving anime game data: {e}")
@@ -74,17 +97,6 @@ class AnimeNameGame(commands.Cog):
         
         return name
 
-    def get_last_letter(self, name: str) -> str:
-        """Get the last meaningful letter from a name"""
-        # Remove spaces and punctuation, get last alphabetic character
-        clean_name = re.sub(r'[^\w]', '', name.lower())
-        
-        for char in reversed(clean_name):
-            if char.isalpha():
-                return char
-        
-        return clean_name[-1] if clean_name else ''
-
     def get_first_letter(self, name: str) -> str:
         """Get the first meaningful letter from a name"""
         # Remove spaces and punctuation, get first alphabetic character
@@ -95,6 +107,12 @@ class AnimeNameGame(commands.Cog):
                 return char
         
         return clean_name[0] if clean_name else ''
+
+    def get_random_letter(self) -> str:
+        """Get a random letter based on weights"""
+        letters = list(self.letter_weights.keys())
+        weights = list(self.letter_weights.values())
+        return random.choices(letters, weights=weights)[0]
 
     async def search_anilist_character(self, name: str) -> Optional[dict]:
         """Search for character on AniList API"""
@@ -113,6 +131,7 @@ class AnimeNameGame(commands.Cog):
                             romaji
                             english
                         }
+                        type
                     }
                 }
             }
@@ -139,48 +158,87 @@ class AnimeNameGame(commands.Cog):
 
     def calculate_xp(self, time_taken: float) -> int:
         """Calculate XP based on response time"""
-        if time_taken <= 20:
+        if time_taken <= 10:
+            return 3000
+        elif time_taken <= 20:
             return 2000
         elif time_taken <= 30:
             return 1500
         elif time_taken <= 60:  # 1 minute
-            return 800
-        elif time_taken <= 21600:  # 6 hours
+            return 1000
+        elif time_taken <= 300:  # 5 minutes
+            return 500
+        elif time_taken <= 1800:  # 30 minutes
             return 200
-        elif time_taken <= 43200:  # 12 hours
-            return 100
-        else:  # 1 day and over
-            return 20
+        else:
+            return 50
+
+    async def send_new_letter(self, channel, guild_id: int):
+        """Send a new random letter challenge"""
+        letter = self.get_random_letter()
+        current_time = time.time()
+        
+        embed = discord.Embed(
+            title="🎯 New Letter Challenge!",
+            description=f"Name an anime character that starts with **{letter.upper()}**!",
+            color=0x00aaff
+        )
+        embed.add_field(
+            name="XP Rewards",
+            value="• Under 10s: 3000 XP\n"
+                  "• Under 20s: 2000 XP\n"
+                  "• Under 30s: 1500 XP\n"
+                  "• Under 1min: 1000 XP\n"
+                  "• Under 5min: 500 XP\n"
+                  "• Under 30min: 200 XP\n"
+                  "• Over 30min: 50 XP",
+            inline=False
+        )
+        embed.set_footer(text="First valid character wins!")
+        
+        message = await channel.send(embed=embed)
+        
+        # Store current letter challenge
+        self.current_letters[guild_id] = {
+            'letter': letter,
+            'timestamp': current_time,
+            'message_id': message.id,
+            'active': True
+        }
+        
+        self.save_data()
 
     @discord.app_commands.command(name='animegame', description='Show anime name game info and commands')
     async def anime_game_info(self, interaction: discord.Interaction):
         """Show anime name game information"""
         embed = discord.Embed(
-            title="🎌 Anime Name Game",
-            description="Play the anime character name game!",
+            title="🎌 Anime Name Game (Random Letter Mode)",
+            description="Play the anime character name game with random letters!",
             color=0x00ff00
         )
         embed.add_field(
             name="How to Play",
-            value="• Send anime character names in the game channel\n"
-                  "• Next name must start with the last letter of previous name\n"
-                  "• Each name can only be used once\n"
+            value="• Random letters will be posted in the game channel\n"
+                  "• Be the first to name a valid anime character starting with that letter\n"
+                  "• Each character name can only be used once per server\n"
                   "• Faster responses = more XP!",
             inline=False
         )
         embed.add_field(
             name="XP System",
-            value="• Under 20s: 2000 XP\n"
+            value="• Under 10s: 3000 XP\n"
+                  "• Under 20s: 2000 XP\n"
                   "• Under 30s: 1500 XP\n"
-                  "• Under 1min: 800 XP\n"
-                  "• Under 6hrs: 200 XP\n"
-                  "• Under 12hrs: 100 XP\n"
-                  "• Over 1 day: 20 XP",
+                  "• Under 1min: 1000 XP\n"
+                  "• Under 5min: 500 XP\n"
+                  "• Under 30min: 200 XP\n"
+                  "• Over 30min: 50 XP",
             inline=False
         )
         embed.add_field(
             name="Slash Commands",
             value="`/setchannel` - Set game channel\n"
+                  "`/newletter` - Generate new letter (if no active challenge)\n"
                   "`/leaderboard` - View XP leaderboard\n"
                   "`/stats` - View your stats\n"
                   "`/resetgame` - Reset game (Admin only)",
@@ -203,7 +261,7 @@ class AnimeNameGame(commands.Cog):
             self.game_channels[guild_id] = {}
             self.used_names[guild_id] = set()
             self.user_scores[guild_id] = {}
-            self.last_messages[guild_id] = {}
+            self.current_letters[guild_id] = {}
         
         self.game_channels[guild_id]['channel_id'] = channel.id
         self.save_data()
@@ -215,13 +273,46 @@ class AnimeNameGame(commands.Cog):
         )
         embed.add_field(
             name="Rules",
-            value="• Only anime character names allowed\n"
-                  "• Next name starts with last letter of previous name\n"
-                  "• No repeated names\n"
+            value="• Random letters will be posted automatically\n"
+                  "• Be first to name a character starting with that letter\n"
+                  "• No repeated character names\n"
                   "• Verified through AniList database",
             inline=False
         )
+        
         await interaction.response.send_message(embed=embed)
+        
+        # Send first letter challenge
+        await self.send_new_letter(channel, guild_id)
+
+    @discord.app_commands.command(name='newletter', description='Generate a new letter challenge')
+    async def new_letter(self, interaction: discord.Interaction):
+        """Generate a new letter challenge"""
+        guild_id = interaction.guild.id
+        
+        # Check if game is set up
+        if guild_id not in self.game_channels:
+            await interaction.response.send_message("❌ Game channel not set! Use `/setchannel` first.")
+            return
+        
+        # Check if there's an active challenge
+        if (guild_id in self.current_letters and 
+            self.current_letters[guild_id].get('active', False)):
+            current_letter = self.current_letters[guild_id]['letter']
+            await interaction.response.send_message(
+                f"❌ There's already an active challenge for letter **{current_letter.upper()}**!"
+            )
+            return
+        
+        channel_id = self.game_channels[guild_id]['channel_id']
+        channel = self.bot.get_channel(channel_id)
+        
+        if not channel:
+            await interaction.response.send_message("❌ Game channel not found!")
+            return
+        
+        await interaction.response.send_message("🎯 Generating new letter challenge...")
+        await self.send_new_letter(channel, guild_id)
 
     @discord.app_commands.command(name='leaderboard', description='Show anime game XP leaderboard')
     @discord.app_commands.describe(page='Page number to view')
@@ -321,9 +412,9 @@ class AnimeNameGame(commands.Cog):
         embed = discord.Embed(
             title="⚠️ Reset Confirmation",
             description="This will reset all game data including:\n"
-                       "• All used names\n"
+                       "• All used character names\n"
                        "• All player XP and scores\n"
-                       "• Game progress\n\n"
+                       "• Current letter challenge\n\n"
                        "This action cannot be undone!",
             color=0xff0000
         )
@@ -340,8 +431,8 @@ class AnimeNameGame(commands.Cog):
                 self.used_names[guild_id].clear()
             if guild_id in self.user_scores:
                 self.user_scores[guild_id].clear()
-            if guild_id in self.last_messages:
-                self.last_messages[guild_id].clear()
+            if guild_id in self.current_letters:
+                self.current_letters[guild_id].clear()
             
             self.save_data()
             
@@ -351,6 +442,13 @@ class AnimeNameGame(commands.Cog):
                 color=0x00ff00
             )
             await message.edit(embed=embed, view=None)
+            
+            # Send new letter challenge
+            if guild_id in self.game_channels:
+                channel_id = self.game_channels[guild_id]['channel_id']
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    await self.send_new_letter(channel, guild_id)
         else:
             embed = discord.Embed(
                 title="❌ Reset Cancelled",
@@ -378,8 +476,8 @@ class AnimeNameGame(commands.Cog):
             self.used_names[guild_id] = set()
         if guild_id not in self.user_scores:
             self.user_scores[guild_id] = {}
-        if guild_id not in self.last_messages:
-            self.last_messages[guild_id] = {}
+        if guild_id not in self.current_letters:
+            self.current_letters[guild_id] = {}
         
         character_name = message.content.strip()
         
@@ -387,10 +485,16 @@ class AnimeNameGame(commands.Cog):
         if not character_name or character_name.startswith(('/', '!!')):
             return
         
+        # Check if there's an active letter challenge
+        if not self.current_letters[guild_id].get('active', False):
+            return
+        
+        required_letter = self.current_letters[guild_id]['letter']
+        challenge_timestamp = self.current_letters[guild_id]['timestamp']
+        
         # Check if name was already used
         normalized_name = self.normalize_name(character_name)
         if normalized_name in self.used_names[guild_id]:
-            # Find who used it first
             embed = discord.Embed(
                 title="❌ Name Already Used",
                 description=f"The name **{character_name}** has already been used!",
@@ -400,22 +504,18 @@ class AnimeNameGame(commands.Cog):
             await message.delete(delay=2)
             return
         
-        # Check if follows the letter rule
-        last_msg = self.last_messages[guild_id]
-        if last_msg and 'last_letter' in last_msg:
-            required_letter = last_msg['last_letter']
-            first_letter = self.get_first_letter(character_name)
-            
-            if first_letter != required_letter:
-                embed = discord.Embed(
-                    title="❌ Wrong Starting Letter",
-                    description=f"The name must start with **{required_letter.upper()}**\n"
-                               f"Your name starts with **{first_letter.upper()}**",
-                    color=0xff0000
-                )
-                await message.reply(embed=embed, delete_after=10)
-                await message.delete(delay=2)
-                return
+        # Check if starts with correct letter
+        first_letter = self.get_first_letter(character_name)
+        if first_letter != required_letter:
+            embed = discord.Embed(
+                title="❌ Wrong Starting Letter",
+                description=f"The name must start with **{required_letter.upper()}**\n"
+                           f"Your name starts with **{first_letter.upper()}**",
+                color=0xff0000
+            )
+            await message.reply(embed=embed, delete_after=10)
+            await message.delete(delay=2)
+            return
         
         # Verify character exists on AniList
         async with message.channel.typing():
@@ -434,12 +534,8 @@ class AnimeNameGame(commands.Cog):
         
         # Calculate XP based on response time
         current_time = time.time()
-        if last_msg and 'timestamp' in last_msg:
-            time_taken = current_time - last_msg['timestamp']
-            xp_gained = self.calculate_xp(time_taken)
-        else:
-            xp_gained = 2000  # First message gets full XP
-            time_taken = 0
+        time_taken = current_time - challenge_timestamp
+        xp_gained = self.calculate_xp(time_taken)
         
         # Add to used names and update scores
         self.used_names[guild_id].add(normalized_name)
@@ -449,21 +545,15 @@ class AnimeNameGame(commands.Cog):
             self.user_scores[guild_id][user_id] = 0
         self.user_scores[guild_id][user_id] += xp_gained
         
-        # Update last message info
-        last_letter = self.get_last_letter(character_name)
-        self.last_messages[guild_id] = {
-            'user_id': user_id,
-            'name': character_name,
-            'timestamp': current_time,
-            'last_letter': last_letter
-        }
+        # Deactivate current challenge
+        self.current_letters[guild_id]['active'] = False
         
         # Save data
         self.save_data()
         
         # Create success embed
         embed = discord.Embed(
-            title="✅ Valid Character!",
+            title="🎉 Correct Answer!",
             description=f"**{character_name}** by {message.author.mention}",
             color=0x00ff00
         )
@@ -477,29 +567,30 @@ class AnimeNameGame(commands.Cog):
         # Add anime info
         media = character_data.get('media', {}).get('nodes', [])
         if media:
-            anime_title = media[0].get('title', {}).get('romaji', 'Unknown')
-            embed.add_field(name="From Anime", value=anime_title, inline=True)
+            # Filter for anime only
+            anime_media = [m for m in media if m.get('type') == 'ANIME']
+            if anime_media:
+                anime_title = anime_media[0].get('title', {}).get('romaji', 'Unknown')
+                embed.add_field(name="From Anime", value=anime_title, inline=True)
         
         embed.add_field(name="XP Gained", value=f"+{xp_gained:,} XP", inline=True)
         
-        if time_taken > 0:
-            if time_taken < 60:
-                time_str = f"{time_taken:.1f}s"
-            elif time_taken < 3600:
-                time_str = f"{time_taken/60:.1f}m"
-            else:
-                time_str = f"{time_taken/3600:.1f}h"
-            embed.add_field(name="Response Time", value=time_str, inline=True)
-        
-        embed.add_field(
-            name="Next Letter",
-            value=f"Next name must start with **{last_letter.upper()}**",
-            inline=False
-        )
+        # Format time taken
+        if time_taken < 60:
+            time_str = f"{time_taken:.1f}s"
+        elif time_taken < 3600:
+            time_str = f"{time_taken/60:.1f}m"
+        else:
+            time_str = f"{time_taken/3600:.1f}h"
+        embed.add_field(name="Response Time", value=time_str, inline=True)
         
         embed.set_footer(text=f"Total XP: {self.user_scores[guild_id][user_id]:,}")
         
         await message.reply(embed=embed)
+        
+        # Wait a bit then send new letter challenge
+        await asyncio.sleep(3)
+        await self.send_new_letter(message.channel, guild_id)
 
 class ConfirmView(discord.ui.View):
     def __init__(self):
