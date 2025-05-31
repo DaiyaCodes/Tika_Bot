@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import json
+from drive_utils import upload_json, download_json
 import os
 import re
 from pathlib import Path
@@ -14,24 +15,35 @@ class NgaReply(commands.Cog):
         self.data_file = Path('data/nga_replies.json')
         self.triggers = self.load_triggers()
     
-    def load_triggers(self):
-        """Load trigger data from JSON file"""
+    
+    def load_data_drive(self):
+        local_path = os.path.join(self.data_dir, 'nga_replies.json')
         try:
-            if self.data_file.exists():
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+            os.makedirs(self.data_dir, exist_ok=True)
+            downloaded = download_json('nga_replies.json', local_path)
+            if not downloaded:
+                self.logger.warning("No existing nga_replies.json found on Drive.")
+                return {}
+            with open(local_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            self.logger.error(f"Error loading nga_replies.json: {e}")
+            return {}
             return {}
         except Exception as e:
             self.logger.error(f"Error loading triggers: {e}")
             return {}
     
-    def save_triggers(self):
-        """Save trigger data to JSON file"""
+    
+    async def save_data_drive(self, data):
+        local_path = os.path.join(self.data_dir, 'nga_replies.json')
         try:
-            # Ensure data directory exists
-            self.data_file.parent.mkdir(exist_ok=True)
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.triggers, f, indent=2, ensure_ascii=False)
+            with open(local_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            upload_json(local_path, 'nga_replies.json')
+        except Exception as e:
+            self.logger.error(f"Error saving nga_replies.json: {e}")
+
         except Exception as e:
             self.logger.error(f"Error saving triggers: {e}")
     

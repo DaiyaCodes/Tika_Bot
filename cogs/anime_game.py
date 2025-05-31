@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
 import unicodedata
+from drive_utils import upload_json, download_json
 
 class AnimeNameGame(commands.Cog):
     def __init__(self, bot):
@@ -26,27 +27,32 @@ class AnimeNameGame(commands.Cog):
         """Save data when cog is unloaded"""
         self.save_data()
 
+    
     def load_data(self):
-        """Load game data from file"""
-        if self.data_file.exists():
-            try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Convert string keys back to integers for guild/user IDs
-                self.game_channels = {int(k): v for k, v in data.get('game_channels', {}).items()}
-                self.used_names = {int(k): set(v) for k, v in data.get('used_names', {}).items()}
-                self.user_scores = {
-                    int(guild_id): {int(user_id): score for user_id, score in users.items()}
-                    for guild_id, users in data.get('user_scores', {}).items()
-                }
-                self.last_messages = {int(k): v for k, v in data.get('last_messages', {}).items()}
-                
-            except Exception as e:
-                self.bot.logger.error(f"Error loading anime game data: {e}")
+        local_path = str(self.data_file)
+        try:
+            os.makedirs('data', exist_ok=True)
+            downloaded = download_json('anime_game.json', local_path)
+
+            if not downloaded:
+                self.bot.logger.warning("No existing anime_game.json found on Drive.")
+                return
+
+            with open(local_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            self.game_channels = {int(k): v for k, v in data.get('game_channels', {}).items()}
+            self.used_names = {int(k): set(v) for k, v in data.get('used_names', {}).items()}
+            self.user_scores = {
+                int(guild_id): {int(user_id): score for user_id, score in users.items()}
+                for guild_id, users in data.get('user_scores', {}).items()
+            }
+            self.last_messages = {int(k): v for k, v in data.get('last_messages', {}).items()}
+        except Exception as e:
+            self.bot.logger.error(f"Error loading anime game data: {e}")
 
     def save_data(self):
-        """Save game data to file"""
+        local_path = str(self.data_file)
         try:
             data = {
                 'game_channels': {str(k): v for k, v in self.game_channels.items()},
@@ -57,10 +63,11 @@ class AnimeNameGame(commands.Cog):
                 },
                 'last_messages': {str(k): v for k, v in self.last_messages.items()}
             }
-            
-            with open(self.data_file, 'w', encoding='utf-8') as f:
+
+            with open(local_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-                
+
+            upload_json(local_path, 'anime_game.json')
         except Exception as e:
             self.bot.logger.error(f"Error saving anime game data: {e}")
 
